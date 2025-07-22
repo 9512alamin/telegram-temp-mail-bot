@@ -1,10 +1,21 @@
 import json
 import urllib.request
 import time
+import os
 
 BOT_TOKEN = "7824259166:AAGzYngUNDWq_a4IDhweO_fXjph2NtZciMc"
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 user_data = {}
+
+def save_user_data():
+    with open("users.json", "w") as f:
+        json.dump(user_data, f)
+
+def load_user_data():
+    global user_data
+    if os.path.exists("users.json"):
+        with open("users.json", "r") as f:
+            user_data = json.load(f)
 
 def send_message(chat_id, text, buttons=None):
     url = API_URL + "sendMessage"
@@ -13,80 +24,113 @@ def send_message(chat_id, text, buttons=None):
         "text": text,
         "parse_mode": "Markdown"
     }
-    if buttons:
-        payload["reply_markup"] = json.dumps({"inline_keyboard": buttons})
-    headers = {"Content-Type":"application/json","User-Agent":"Mozilla/5.0"}
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers)
-    try:
-        with urllib.request.urlopen(req) as res:
-            print("[✓] Message sent.")
-    except Exception as e:
-        print(f"[✗] HTTP error: {e}")
 
-def get_updates(offset=None):
-    url = API_URL + "getUpdates" + (f"?offset={offset}" if offset else "")
+    if buttons:
+        keyboard = [[{"text": b, "callback_data": b.lower()}] for b in buttons]
+        payload["reply_markup"] = json.dumps({"inline_keyboard": keyboard})
+
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(url, data, headers={"Content-Type": "application/json"})
+    urllib.request.urlopen(req)
+
+def create_email():
+    res = urllib.request.urlopen("https://www.1secmail.com/api/v1/?action=genRandomMailbox&count=1")
+    return json.loads(res.read())[0]
+
+def get_inbox(email):
+    login, domain = email.split("@")
+    url = f"https://www.1secmail.com/api/v1/?action=getMessages&login={login}&domain={domain}"
+    res = urllib.request.urlopen(url)
+    return json.loads(res.read())
+
+def delete_email(email):
+    login, domain = email.split("@")
+    url = f"https://www.1secmail.com/mailbox/?action=deleteMailbox&login={login}&domain={domain}"
     try:
-        with urllib.request.urlopen(url) as res:
-            return json.loads(res.read())
+        urllib.request.urlopen(url)
+        return True
+    except:
+        return False
+
+def get_stats():
+    url = "https://www.1secmail.com/api/v1/?action=getDomainStats"
+    try:
+        res = urllib.request.urlopen(url)
+        return json.loads(res.read())
     except:
         return {}
 
-def handle_command(msg):
-    chat = msg["chat"]["id"]
-    text = msg.get("text","")
-    if text == "/start":
-        buttons = [
-            [{"text":"📧 Generate Email","callback_data":"generate"}],
-            [{"text":"📬 Inbox","callback_data":"inbox"}],
-            [{"text":"🗑 Delete Email","callback_data":"delete"}],
-            [{"text":"📊 Statistics","callback_data":"statistics"}],
-        ]
-        send_message(chat, "👋 Welcome! Choose:", buttons)
+def handle_callback(callback):
+    chat_id = callback["message"]["chat"]["id"]
+    data = callback["data"]
+    user = user_data.get(str(chat_id))
 
-def handle_callback(cb):
-    chat = cb["message"]["chat"]["id"]
-    data = cb["data"]
-    user = user_data.get(chat)
-    if data=="generate":
-        email,token = create_email()
-        if email:
-            user_data[chat]={"email":email,"token":token}
-            send_message(chat,f"📧 Your email:\n`{email}`")
+    if data == "generate email":
+        email = create_email()
+        user_data[str(chat_id)] = {"email": email}
+        save_user_data()
+        send_message(chat_id, f"✅ Your Temp Email:\n`{email}`", ["Inbox", "Delete Email", "Statistics"])
+
+    elif data == "inbox":
+        if not user:
+            send_message(chat_id, "❌ First use *Generate Email*", ["Generate Email"])
+            return
+
+        inbox = get_inbox(user["email"])
+        if inbox:
+            for msg in inbox:
+                subject = msg.get("subject", "No Subject")
+                from_addr = msg.get("from", "Unknown")
+                send_message(chat_id, f"📩 *Subject:* `{subject}`\n👤 *From:* `{from_addr}`")
         else:
-            send_message(chat,"❌ Failed to generate email.")
-    # ... rest handle similarly ...
+            send_message(chat_id, "📭 Inbox is empty.")
 
-def create_email():
-    url="https://api.internal.temp-mail.io/api/v3/email/new"
-    data=json.dumps({"min_name_length":10,"max_name_length":10}).encode()
-    headers={"Content-Type":"application/json","User-Agent":"Mozilla/5.0"}
-    req=urllib.request.Request(url,data=data,headers=headers)
-    try:
-        with urllib.request.urlopen(req) as res:
-            r=json.loads(res.read())
-            return r["email"],r["token"]
-    except:
-        return None,None
+    elif data == "delete email":
+        if not user:
+            send_message(chat_id, "❌ First use *Generate Email*", ["Generate Email"])
+            return
 
-def get_inbox(email):
-    url=f"https://api.internal.temp-mail.io/api/v3/email/{email}/messages"
-    req=urllib.request.Request(url,headers={"Accept":"application/json"})
-    try:
-        with urllib.request.urlopen(req) as res:
-            return json.loads(res.read())
-    except:
-        return []
+        success = delete_email(user["email"])
+        if success:
+            del user_data[str(chat_id)]
+            save_user_data()
+            send_message(chat_id, "🗑️ Temp email deleted successfully.", ["Generate Email"])
+        else:
+            send_message(chat_id, "⚠️ Failed to delete email.")
+
+    elif data == "statistics":
+        stats = get_stats()
+        if stats:
+            total = stats.get("total", "N/A")
+            today = stats.get("total_today", "N/A")
+            domains = stats.get("domains", [])
+            msg = f"📊 *Domain Stats:*\n📥 Total Emails: `{total}`\n📅 Today: `{today}`\n🟡 Domains: `{', '.join(domains)}`"
+            send_message(chat_id, msg)
+        else:
+            send_message(chat_id, "⚠️ Couldn't fetch stats.")
 
 def main():
-    last=None
+    load_user_data()
+    offset = 0
     while True:
-        ups=get_updates(last)
-        for u in ups.get("result",[]):
-            last=u["update_id"]+1
-            if "message" in u: handle_command(u["message"])
-            if "callback_query" in u: handle_callback(u["callback_query"])
-        time.sleep(1)
+        try:
+            url = API_URL + f"getUpdates?timeout=100&offset={offset}"
+            res = urllib.request.urlopen(url)
+            updates = json.loads(res.read())
 
-if __name__=="__main__":
+            for update in updates.get("result", []):
+                offset = update["update_id"] + 1
+                if "message" in update:
+                    chat_id = update["message"]["chat"]["id"]
+                    text = update["message"].get("text", "")
+                    if text == "/start":
+                        send_message(chat_id, "👋 Welcome to TempMail Bot!", ["Generate Email"])
+                elif "callback_query" in update:
+                    handle_callback(update["callback_query"])
+
+        except Exception as e:
+            print("Error:", e)
+            time.sleep(5)
+
+if __name__ == "__main__":
     main()
