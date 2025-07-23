@@ -1,5 +1,7 @@
 services:
-  - type: web
-    name: mail-bot
+  - type: worker
+    name: temp-mail-bot
     env: python
-    startCommand: bash start.sh
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python mail2.py"
